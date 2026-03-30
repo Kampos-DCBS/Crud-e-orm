@@ -1,105 +1,120 @@
 from flask import Flask, request, jsonify
-import sqlite3
+from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 
-BANCO = "games.db"
+# Configuração do banco agora via SQLAlchemy
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///games.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Instância do ORM (substitui sqlite3)
+db = SQLAlchemy(app)
+
+# Model representa a tabela "jogos"
+class Game(db.Model):
+    __tablename__ = 'jogos'
+
+    id = db.Column(db.Integer, primary_key=True)
+    titulo = db.Column(db.String(100), nullable=False)
+    estoque = db.Column(db.Integer, nullable=False)
+    valor = db.Column(db.Float, nullable=False)
+
+    # Converte objeto em JSON
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "titulo": self.titulo,
+            "estoque": self.estoque,
+            "valor": self.valor
+        }
 
 
-def get_db():
-    conn = sqlite3.connect(BANCO)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Criação automática do banco/tabela
+with app.app_context():
+    db.create_all()
 
 
-def query_db(comando, args=(), fetch=False):
-    conn = get_db()
-    cur = conn.cursor()
-
-    resposta = None
-
-    try:
-        cur.execute(comando, args)
-
-        if fetch:
-            resposta = cur.fetchall()
-        else:
-            conn.commit()
-
-    except Exception as erro:
-        return {"erro": str(erro)}
-
-    finally:
-        conn.close()
-
-    return resposta
-
+# GET - listar todos
 @app.route("/games", methods=["GET"])
 def listar_games():
-    dados = query_db("SELECT * FROM jogos", fetch=True)
-    return jsonify([dict(g) for g in dados])
+    # 🔹 Antes: SELECT * FROM jogos
+    # 🔹 Agora: ORM
+    games = Game.query.all()
+    return jsonify([g.to_dict() for g in games])
 
+
+# GET por ID
 @app.route("/games/<int:game_id>", methods=["GET"])
 def buscar_game(game_id):
-    resultado = query_db(
-        "SELECT * FROM jogos WHERE id = ?",
-        (game_id,),
-        fetch=True
-    )
 
-    if not resultado:
+    game = Game.query.get(game_id)
+
+    if not game:
         return jsonify({"erro": "Game não encontrado"}), 404
 
-    return jsonify(dict(resultado[0]))
+    return jsonify(game.to_dict())
 
+
+# POST - criar
 @app.route("/games", methods=["POST"])
 def criar_game():
+
     body = request.get_json()
 
     if not body:
         return jsonify({"erro": "JSON inválido"}), 400
 
-    query_db(
-        "INSERT INTO jogos (titulo, estoque, valor) VALUES (?, ?, ?)",
-        (body["titulo"], body["estoque"], body["valor"])
+    novo_game = Game(
+        titulo=body.get("titulo"),
+        estoque=body.get("estoque"),
+        valor=body.get("valor")
     )
+    # ORM
+    db.session.add(novo_game)
+    db.session.commit()
 
-    return jsonify({"mensagem": "Game cadastrado"}), 201
+    return jsonify({
+        "mensagem": "Game cadastrado",
+        "id": novo_game.id
+    }), 201
 
+# PUT - atualizar
 @app.route("/games/<int:game_id>", methods=["PUT"])
 def atualizar_game(game_id):
-    body = request.get_json()
 
-    existe = query_db(
-        "SELECT id FROM jogos WHERE id = ?",
-        (game_id,),
-        fetch=True
-    )
+    game = Game.query.get(game_id)
 
-    if not existe:
+    if not game:
         return jsonify({"erro": "Game não encontrado"}), 404
 
-    query_db(
-        "UPDATE jogos SET titulo=?, estoque=?, valor=? WHERE id=?",
-        (body["titulo"], body["estoque"], body["valor"], game_id)
-    )
+    body = request.get_json()
+
+    # Atualização sem SQL
+    game.titulo = body.get("titulo", game.titulo)
+    game.estoque = body.get("estoque", game.estoque)
+    game.valor = body.get("valor", game.valor)
+
+    db.session.commit()
 
     return jsonify({"mensagem": "Game atualizado"})
 
+
+# DELETE
 @app.route("/games/<int:game_id>", methods=["DELETE"])
 def deletar_game(game_id):
-    item = query_db(
-        "SELECT titulo FROM jogos WHERE id = ?",
-        (game_id,),
-        fetch=True
-    )
 
-    if not item:
+    game = Game.query.get(game_id)
+
+    if not game:
         return jsonify({"erro": "Game não encontrado"}), 404
 
-    query_db("DELETE FROM jogos WHERE id = ?", (game_id,))
+    titulo = game.titulo
 
-    return jsonify({"mensagem": f"{item[0]['titulo']} removido"})
+    db.session.delete(game)
+    db.session.commit()
+
+    return jsonify({"mensagem": f"{titulo} removido"})
+
 
 if __name__ == "__main__":
     app.run(debug=True)
